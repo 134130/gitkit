@@ -62,6 +62,22 @@ func (c Client) RemoteURL(ctx context.Context, name string) (string, error) {
 	return c.git.Output(ctx, "remote", "get-url", name)
 }
 
+func (c Client) DefaultBranch(ctx context.Context, remote string) (string, error) {
+	out, err := c.git.Output(ctx, "remote", "show", remote)
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if before, after, ok := strings.Cut(line, ":"); ok && strings.Contains(before, "HEAD branch") {
+			branch := strings.TrimSpace(after)
+			if branch != "" {
+				return branch, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("could not determine default branch for remote %s", remote)
+}
+
 func (c Client) MergeBase(ctx context.Context, a, b string) (string, error) {
 	return c.git.Output(ctx, "merge-base", a, b)
 }
