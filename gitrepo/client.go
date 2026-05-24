@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/134130/gitkit/gitcmd"
@@ -60,6 +61,17 @@ func (c Client) RevParse(ctx context.Context, ref string) (string, error) {
 
 func (c Client) RemoteURL(ctx context.Context, name string) (string, error) {
 	return c.git.Output(ctx, "remote", "get-url", name)
+}
+
+func (c Client) CurrentBranch(ctx context.Context) (string, error) {
+	branch, err := c.git.Output(ctx, "branch", "--show-current")
+	if err != nil {
+		return "", err
+	}
+	if branch == "" {
+		return "", fmt.Errorf("current HEAD is detached")
+	}
+	return branch, nil
 }
 
 func (c Client) DefaultBranch(ctx context.Context, remote string) (string, error) {
@@ -138,6 +150,81 @@ func (c Client) IsRebasing(ctx context.Context) (bool, error) {
 	return state.Rebasing || state.ApplyingPatch, err
 }
 
+func (c Client) Switch(ctx context.Context, branch string) error {
+	_, err := c.git.Run(ctx, "switch", branch)
+	return err
+}
+
+func (c Client) SwitchCreateOrReset(ctx context.Context, branch, startPoint string) error {
+	_, err := c.git.Run(ctx, "switch", "-C", branch, startPoint)
+	return err
+}
+
+func (c Client) PullRebase(ctx context.Context, remote, branch string) error {
+	_, err := c.git.Run(ctx, "pull", "--rebase", remote, branch)
+	return err
+}
+
+func (c Client) StashPush(ctx context.Context, message string, includeUntracked bool) (string, error) {
+	args := []string{"stash", "push"}
+	if includeUntracked {
+		args = append(args, "-u")
+	}
+	if message != "" {
+		args = append(args, "-m", message)
+	}
+	result, err := c.git.Run(ctx, args...)
+	if err != nil {
+		return "", err
+	}
+	if strings.Contains(result.StdoutString(), "No local changes to save") {
+		return "", nil
+	}
+	ref, err := c.git.Output(ctx, "stash", "list", "--format=%gd", "-n", "1")
+	if err != nil {
+		return "", err
+	}
+	if ref == "" {
+		return "", fmt.Errorf("stash push succeeded but no stash ref was found")
+	}
+	return ref, nil
+}
+
+func (c Client) StashApply(ctx context.Context, ref string) error {
+	_, err := c.git.Run(ctx, "stash", "apply", ref)
+	return err
+}
+
+func (c Client) StashDrop(ctx context.Context, ref string) error {
+	_, err := c.git.Run(ctx, "stash", "drop", ref)
+	return err
+}
+
+type AheadBehind struct {
+	Ahead  int
+	Behind int
+}
+
+func (c Client) AheadBehind(ctx context.Context, left, right string) (AheadBehind, error) {
+	out, err := c.git.Output(ctx, "rev-list", "--left-right", "--count", left+"..."+right)
+	if err != nil {
+		return AheadBehind{}, err
+	}
+	fields := strings.Fields(out)
+	if len(fields) != 2 {
+		return AheadBehind{}, fmt.Errorf("unexpected ahead/behind output %q", out)
+	}
+	leftCount, err := strconv.Atoi(fields[0])
+	if err != nil {
+		return AheadBehind{}, fmt.Errorf("parse left count %q: %w", fields[0], err)
+	}
+	rightCount, err := strconv.Atoi(fields[1])
+	if err != nil {
+		return AheadBehind{}, fmt.Errorf("parse right count %q: %w", fields[1], err)
+	}
+	return AheadBehind{Ahead: rightCount, Behind: leftCount}, nil
+}
+
 func (c Client) Fetch(ctx context.Context, remote string, refspec ...string) error {
 	args := []string{"fetch", remote}
 	args = append(args, refspec...)
@@ -192,6 +279,11 @@ func (c Client) PushForceWithLease(ctx context.Context, remote, branch string) e
 	return err
 }
 
+func (c Client) PushForceWithLeaseRefspec(ctx context.Context, remote, refspec string) error {
+	_, err := c.git.Run(ctx, "push", "--force-with-lease", remote, refspec)
+	return err
+}
+
 type RebaseOptions struct {
 	Onto     string
 	Upstream string
@@ -201,9 +293,15 @@ type RebaseOptions struct {
 func (c Client) Rebase(ctx context.Context, opts RebaseOptions) error {
 	args := []string{"rebase"}
 	if opts.Upstream != "" {
-		args = append(args, "--onto", opts.Onto, opts.Upstream, opts.Branch)
+		args = append(args, "--onto", opts.Onto, opts.Upstream)
+		if opts.Branch != "" {
+			args = append(args, opts.Branch)
+		}
 	} else {
-		args = append(args, opts.Onto, opts.Branch)
+		args = append(args, opts.Onto)
+		if opts.Branch != "" {
+			args = append(args, opts.Branch)
+		}
 	}
 
 	_, err := c.git.Run(ctx, args...)
