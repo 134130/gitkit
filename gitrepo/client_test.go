@@ -2,6 +2,7 @@ package gitrepo
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 
@@ -51,12 +52,7 @@ func (r *sequenceRunner) Start(_ context.Context, cmd gitcmd.Command) (gitcmd.Pr
 }
 
 func TestClientDefaultBranch(t *testing.T) {
-	runner := &fakeRunner{result: gitcmd.Result{Stdout: []byte(`
-* remote origin
-  Fetch URL: git@github.com:owner/repo.git
-  Push  URL: git@github.com:owner/repo.git
-  HEAD branch: main
-`)}}
+	runner := &fakeRunner{result: gitcmd.Result{Stdout: []byte("origin/main\n")}}
 
 	branch, err := New(runner).DefaultBranch(context.Background(), "origin")
 	if err != nil {
@@ -69,8 +65,41 @@ func TestClientDefaultBranch(t *testing.T) {
 	if runner.command.Program != gitcmd.ProgramGit {
 		t.Fatalf("program mismatch: %q", runner.command.Program)
 	}
-	if !reflect.DeepEqual(runner.command.Args, []string{"remote", "show", "origin"}) {
+	if !reflect.DeepEqual(runner.command.Args, []string{"symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"}) {
 		t.Fatalf("args mismatch: %#v", runner.command.Args)
+	}
+}
+
+func TestClientDefaultBranchFallsBackToRemoteShow(t *testing.T) {
+	runner := &sequenceRunner{responses: []response{
+		{err: errors.New("missing local remote head")},
+		{result: gitcmd.Result{Stdout: []byte(`
+* remote origin
+  Fetch URL: git@github.com:owner/repo.git
+  Push  URL: git@github.com:owner/repo.git
+  HEAD branch: main
+`)}},
+	}}
+
+	branch, err := New(runner).DefaultBranch(context.Background(), "origin")
+	if err != nil {
+		t.Fatalf("DefaultBranch returned error: %v", err)
+	}
+
+	if branch != "main" {
+		t.Fatalf("branch mismatch: want %q, got %q", "main", branch)
+	}
+	wantCommands := [][]string{
+		{"symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"},
+		{"remote", "show", "origin"},
+	}
+	if len(runner.commands) != len(wantCommands) {
+		t.Fatalf("command count mismatch: %#v", runner.commands)
+	}
+	for i, want := range wantCommands {
+		if !reflect.DeepEqual(runner.commands[i].Args, want) {
+			t.Fatalf("args mismatch at %d\nwant: %#v\n got: %#v", i, want, runner.commands[i].Args)
+		}
 	}
 }
 

@@ -75,6 +75,25 @@ func (c Client) CurrentBranch(ctx context.Context) (string, error) {
 }
 
 func (c Client) DefaultBranch(ctx context.Context, remote string) (string, error) {
+	branch, err := c.defaultBranchFromRemoteHead(ctx, remote)
+	if err == nil {
+		return branch, nil
+	}
+	return c.defaultBranchFromRemoteShow(ctx, remote)
+}
+
+func (c Client) defaultBranchFromRemoteHead(ctx context.Context, remote string) (string, error) {
+	out, err := c.git.Output(ctx, "symbolic-ref", "--quiet", "--short", "refs/remotes/"+remote+"/HEAD")
+	if err != nil {
+		return "", err
+	}
+	if branch, ok := defaultBranchFromSymbolicRef(remote, out); ok {
+		return branch, nil
+	}
+	return "", fmt.Errorf("could not determine default branch from refs/remotes/%s/HEAD", remote)
+}
+
+func (c Client) defaultBranchFromRemoteShow(ctx context.Context, remote string) (string, error) {
 	out, err := c.git.Output(ctx, "remote", "show", remote)
 	if err != nil {
 		return "", err
@@ -88,6 +107,12 @@ func (c Client) DefaultBranch(ctx context.Context, remote string) (string, error
 		}
 	}
 	return "", fmt.Errorf("could not determine default branch for remote %s", remote)
+}
+
+func defaultBranchFromSymbolicRef(remote, ref string) (string, bool) {
+	ref = strings.TrimSpace(ref)
+	branch, ok := strings.CutPrefix(ref, remote+"/")
+	return branch, ok && branch != ""
 }
 
 func (c Client) MergeBase(ctx context.Context, a, b string) (string, error) {
